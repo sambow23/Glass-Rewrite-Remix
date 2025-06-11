@@ -19,6 +19,7 @@ function ENT:SetupDataTables()
 end
 
 local use_expensive = CreateConVar("glass_lagfriendly", 0, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "", 0, 1)
+local realistic_breaking = CreateConVar("glass_realistic_breaking", 1, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Use realistic radial glass breaking patterns (1) or old random breaking (0)", 0, 1)
 
 function ENT:BuildCollision(verts, pointer)
     local new_verts, offset = simplify_vertices(verts, self:GetPhysScale())
@@ -92,10 +93,86 @@ else
     function ENT:Split(pos, explode)
         local self = self
         if explode then pos = pos * 0.5 end  // if explosion, kind of "shrink" position closer to the center of the shard
-        local function randVec() return VectorRand():GetNormalized() end
-        local function randPos() return pos end
+        
         local convexes = {}
-        split_entity({randVec, randPos}, self.TRIANGLES, convexes, 5)
+        local split_depth = 5 // default depth
+        
+        // Choose breaking pattern based on console variable
+        if realistic_breaking:GetBool() then
+            // Create realistic glass fracture patterns
+            local impact_pos = pos
+            local shard_center = Vector(0, 0, 0) // local center of the shard
+            local impact_distance = impact_pos:Distance(shard_center)
+            local shard_size = self:BoundingRadius()
+            
+            // Create radial crack directions from impact point
+            local crack_count = 0
+            local function realisticVec() 
+                crack_count = crack_count + 1
+                
+                // Create radial cracks emanating from impact point
+                if crack_count <= 3 then
+                    // Primary radial cracks - emanate directly from impact
+                    local radial_dir = (VectorRand() * Vector(1, 1, 0.3)):GetNormalized()
+                    
+                    // Bias toward perpendicular to impact if we have velocity data
+                    if self.last_impact_normal then
+                        local perpendicular = self.last_impact_normal:Cross(VectorRand()):GetNormalized()
+                        radial_dir = (radial_dir + perpendicular * 0.7):GetNormalized()
+                    end
+                    
+                    return radial_dir
+                elseif crack_count <= 5 then
+                    // Secondary cracks - somewhat random but biased away from impact
+                    local away_from_impact = (shard_center - impact_pos):GetNormalized()
+                    local random_bias = VectorRand() * 0.4
+                    return (away_from_impact + random_bias):GetNormalized()
+                else
+                    // Tertiary cracks - more random for natural variation
+                    local random_dir = VectorRand():GetNormalized()
+                    
+                    // Slight bias toward horizontal/vertical for more realistic patterns
+                    random_dir.x = random_dir.x * (math.random(0.6, 1.4))
+                    random_dir.y = random_dir.y * (math.random(0.6, 1.4))
+                    random_dir.z = random_dir.z * (math.random(0.3, 0.8))
+                    
+                    return random_dir:GetNormalized()
+                end
+            end
+            
+            // Vary crack positions based on stress distribution
+            local function realisticPos() 
+                // Cracks closer to impact should be more frequent
+                local stress_factor = math.max(0.1, 1 - (impact_distance / shard_size))
+                
+                // Create some cracks at the impact point
+                if crack_count <= 2 then
+                    return impact_pos + VectorRand() * (shard_size * 0.1)
+                else
+                    // Other cracks distributed with stress bias
+                    local random_offset = VectorRand() * shard_size * (0.3 + stress_factor * 0.4)
+                    return impact_pos + random_offset
+                end
+            end
+            
+            // Adjust splitting depth based on impact strength and shard size
+            split_depth = 4
+            if explode then
+                split_depth = 6 // explosions create more fragments
+            elseif shard_size < 50 then
+                split_depth = 3 // smaller pieces split less
+            elseif impact_distance < shard_size * 0.3 then
+                split_depth = 5 // direct hits create more fragments
+            end
+            
+            split_entity({realisticVec, realisticPos}, self.TRIANGLES, convexes, split_depth)
+        else
+            // Original random breaking pattern for backward compatibility
+            local function randVec() return VectorRand():GetNormalized() end
+            local function randPos() return pos end
+            split_entity({randVec, randPos}, self.TRIANGLES, convexes, split_depth)
+        end
+        
         local pos = self:GetPos()
         local ang = self:GetAngles()
         local model = self:GetPhysModel()
@@ -184,6 +261,19 @@ else
         else
             damagepos = Vector()
         end
+        
+        // Store damage data for realistic cracking patterns
+        local attacker = damage:GetAttacker()
+        if attacker and attacker:IsValid() then
+            // Calculate impact direction from attacker to glass
+            local impact_dir = (self:GetPos() - attacker:GetPos()):GetNormalized()
+            self.last_impact_normal = impact_dir
+        else
+            // Fallback to random direction if no attacker info
+            self.last_impact_normal = VectorRand():GetNormalized()
+        end
+        self.last_impact_speed = damage:GetDamage() * 10 // simulate speed from damage
+        
         self:Split(damagepos, damage:GetDamageType() == DMG_BLAST)
         self.CAN_BREAK = false
     end
@@ -206,6 +296,11 @@ else
            
             self.CAN_BREAK = false
             local pos = data.HitPos
+            
+            // Store impact data for realistic cracking
+            self.last_impact_normal = data.HitNormal
+            self.last_impact_speed = data.Speed
+            
             timer.Simple(0, function() // NEVER change collision rules in physics feedback
                 if !self or !self:IsValid() then return end
                 self:Split(self:WorldToLocal(pos))
