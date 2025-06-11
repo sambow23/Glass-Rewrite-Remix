@@ -645,11 +645,6 @@ else
             if !show_cracks:GetBool() then
                 self.CAN_BREAK = false
             end
-            
-            -- Optional: Provide feedback to player
-            if math.random() < 0.3 then -- 30% chance for flavor text
-                entity:ChatPrint("You crashed through the glass!")
-            end
         end
     end
 
@@ -943,6 +938,11 @@ if SERVER then
             ply:ChatPrint("Tip: Run faster to break glass (hold SHIFT to sprint)")
         end
     end, nil, "Analyze your current glass-breaking potential")
+    
+    concommand.Add("glass_panel", function(ply, cmd, args)
+        ply:ChatPrint("Opening Glass Settings Panel...")
+        ply:ChatPrint("Run 'glass_open_panel' in console or check the Utilities > Glass Rewrite menu in your spawnmenu!")
+    end, nil, "Instructions to open the glass settings panel")
 end
 
 -- Crack visualization system
