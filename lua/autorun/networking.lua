@@ -6,13 +6,33 @@ local generateUV, generateNormals, simplify_vertices, split_convex, split_entity
 if SERVER then
     util.AddNetworkString("SHARD_NETWORK")
     util.AddNetworkString("GLASS_SHOW_CRACKS")
+    util.AddNetworkString("GLASS_NO_COLLIDE")
+
+    // Track player interactions with physics objects for better collision detection
+    hook.Add("PlayerUse", "glass_track_player_use", function(ply, ent)
+        if ent and ent:IsValid() and ent:GetPhysicsObject():IsValid() then
+            ent.last_player_touch = {
+                player = ply,
+                time = CurTime()
+            }
+        end
+    end)
+    
+    hook.Add("PhysgunPickup", "glass_track_physgun", function(ply, ent)
+        if ent and ent:IsValid() and ent:GetPhysicsObject():IsValid() then
+            ent.last_player_touch = {
+                player = ply,
+                time = CurTime()
+            }
+        end
+    end)
 
     // must be from client requesting data, send back shard data
     net.Receive("SHARD_NETWORK", function(len, ply)
 		// client requests some shard data
         if len > 1 then
             local shard = net.ReadEntity()
-            if !shard:IsValid() then return end
+            if not shard:IsValid() then return end
             
             net.Start("SHARD_NETWORK")
             net.WriteUInt(shard:EntIndex(), 16)
@@ -39,7 +59,7 @@ if SERVER then
 			timer.Create("shards" .. ply_index, 0.05, #shards, function()
 				local shard = shards[1]
 				table.remove(shards, 1)
-				if !shard:IsValid() then return end
+				if not shard:IsValid() then return end
 				
 				net.Start("SHARD_NETWORK")
 				net.WriteUInt(shard:EntIndex(), 16)
@@ -85,7 +105,7 @@ else
         // try and find shard on client within 10 seconds
         timer.Create("try_shard" .. shard, 0, 1000, function()
             local shard_entity = Entity(shard)
-            if !shard_entity:IsValid() or !shard_entity.GetReferenceShard or !shard_entity.BuildCollision then return end
+            if not shard_entity:IsValid() or not shard_entity.GetReferenceShard or not shard_entity.BuildCollision then return end
 
             // get model information
             local reference_shard = shard_entity:GetReferenceShard()    // the shard that was broken to create the current shard
@@ -94,7 +114,7 @@ else
                 model_triangles = reference_shard.TRIANGLES
             else
                 local model = util.GetModelMeshes(shard_entity:GetPhysModel())
-                if !model then model = util.GetModelMeshes("models/error.mdl") end
+                if not model then model = util.GetModelMeshes("models/error.mdl") end
                 model_triangles = model[1].triangles
             end
 
@@ -147,7 +167,7 @@ else
         local impact_normal = net.ReadVector()
         local explode = net.ReadBool()
         
-        if !shard_entity or !shard_entity:IsValid() then return end
+        if not shard_entity or not shard_entity:IsValid() then return end
         
         // Convert to local coordinates
         local local_pos = shard_entity:WorldToLocal(shard_entity:GetPos() + impact_pos)
@@ -159,6 +179,23 @@ else
                 shard_entity:ShowCracks(local_pos, local_normal)
             end
         end)
+    end)
+    
+    // Receive glass no-collide data
+    net.Receive("GLASS_NO_COLLIDE", function(len)
+        local shard_entity = net.ReadEntity()
+        local player_entity = net.ReadEntity()
+        local should_be_passable = net.ReadBool()
+        
+        if not shard_entity or not shard_entity:IsValid() then return end
+        
+        if should_be_passable and player_entity and player_entity:IsValid() then
+            shard_entity.passable_to_player = player_entity
+            shard_entity:SetCollisionGroup(COLLISION_GROUP_PASSABLE_DOOR)
+        else
+            shard_entity.passable_to_player = nil
+            shard_entity:SetCollisionGroup(COLLISION_GROUP_DEBRIS)
+        end
     end)
 end	
 
