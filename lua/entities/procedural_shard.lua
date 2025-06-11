@@ -23,6 +23,11 @@ local realistic_breaking = CreateConVar("glass_realistic_breaking", 1, {FCVAR_AR
 local show_cracks = CreateConVar("glass_show_cracks", 1, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Show visual cracks before glass breaks (1) or break immediately (0)", 0, 1)
 local crack_delay = CreateConVar("glass_crack_delay", 0.15, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Delay in seconds between showing cracks and breaking", 0.05, 1.0)
 local shard_count = CreateConVar("glass_shard_count", 4, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Controls number of glass shards (1=few, 7=many)", 1, 7)
+local glass_rigidity = CreateConVar("glass_rigidity", 50, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Glass damage threshold before breaking (0=fragile, 200=very strong)", 0, 200)
+local mass_factor = CreateConVar("glass_mass_factor", 1.0, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "How much object mass affects impact force (0.5=less, 2.0=more)", 0.1, 3.0)
+local velocity_transfer = CreateConVar("glass_velocity_transfer", 1.0, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "How much impact velocity transfers to shards (0.5=less dramatic, 2.0=more)", 0.1, 3.0)
+local player_mass = CreateConVar("glass_player_mass", 70, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Player mass in kg for glass breaking calculations (50=light, 100=heavy)", 30, 150)
+local player_break_speed = CreateConVar("glass_player_break_speed", 150, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Minimum player speed to break glass (100=walking, 250=sprinting)", 50, 400)
 
 function ENT:BuildCollision(verts, pointer)
     local new_verts, offset = simplify_vertices(verts, self:GetPhysScale())
@@ -112,11 +117,31 @@ else
         local self = self
         if explode then pos = pos * 0.5 end  -- if explosion, kind of "shrink" position closer to the center of the shard
         
+        -- Store impact data for velocity calculations
+        local impact_velocity = Vector(0, 0, 0)
+        local impact_force_magnitude = 0
+        
+        -- Calculate impact velocity based on stored impact data
+        if self.last_impact_normal and self.last_impact_speed then
+            local base_speed = math.min(self.last_impact_speed, 800) -- Cap for reasonable physics
+            local transfer_factor = velocity_transfer:GetFloat()
+            impact_velocity = self.last_impact_normal * (base_speed * 0.3 * transfer_factor) -- Scale down for realistic effect
+            impact_force_magnitude = base_speed
+        end
+        
+        -- Add some random scatter for more realistic breaking
+        local scatter_amount = explode and 200 or 100
+        
         -- Show cracks first if enabled and not skipping
         if show_cracks:GetBool() and !skip_cracks and !self.showing_cracks then
             self.showing_cracks = true
             self.crack_impact_pos = pos
             self.crack_explode = explode
+            
+            -- Store impact data for delayed break
+            self.stored_impact_velocity = impact_velocity
+            self.stored_impact_force = impact_force_magnitude
+            self.stored_scatter = scatter_amount
             
             -- Show cracks on all clients
             self:ShowCracks(pos, self.last_impact_normal)
@@ -138,6 +163,13 @@ else
             end)
             
             return
+        end
+        
+        -- Use stored impact data if this is a delayed break
+        if self.stored_impact_velocity then
+            impact_velocity = self.stored_impact_velocity
+            impact_force_magnitude = self.stored_impact_force or 0
+            scatter_amount = self.stored_scatter or 100
         end
         
         local convexes = {}
@@ -255,9 +287,54 @@ else
             block:SetRenderMode(rendermode)
             block:BuildCollision(physmesh[1], valid_entity)   -- first thing in table is the triangles
             block.IS_FUNNY_GLASS = self.IS_FUNNY_GLASS
+            
+            -- Inherit a portion of accumulated damage (shards are weaker)
+            if self.accumulated_damage and self.accumulated_damage > 0 then
+                block.accumulated_damage = math.max(0, self.accumulated_damage * 0.3) -- Shards inherit 30% of damage
+            else
+                block.accumulated_damage = 0
+            end
+            
             local phys = block:GetPhysicsObject()
             if phys:IsValid() then
-                phys:SetVelocity(vel)
+                -- Calculate realistic shard velocity based on impact
+                local shard_velocity = Vector(vel.x, vel.y, vel.z) -- Start with original glass velocity
+                
+                if impact_velocity:Length() > 0 then
+                    -- Get the center of this shard relative to impact point
+                    local shard_center = block:GetPos()
+                    local impact_world_pos = self:LocalToWorld(pos)
+                    local impact_to_shard = (shard_center - impact_world_pos):GetNormalized()
+                    
+                    -- Calculate distance factor (closer shards get more velocity)
+                    local distance = impact_world_pos:Distance(shard_center)
+                    local distance_factor = math.Clamp(1 - (distance / self:BoundingRadius()), 0.2, 1)
+                    
+                    -- Apply velocity transfer scaling
+                    local transfer_factor = velocity_transfer:GetFloat()
+                    
+                    -- Base impact velocity in the direction from impact to shard
+                    local directional_velocity = impact_to_shard * (impact_force_magnitude * 0.2 * distance_factor * transfer_factor)
+                    
+                    -- Add the original impact direction with some force
+                    local impact_contribution = impact_velocity * distance_factor * transfer_factor
+                    
+                    -- Combine directional and impact velocities
+                    shard_velocity = shard_velocity + directional_velocity + impact_contribution
+                    
+                    -- Add some random scatter for realistic breaking
+                    local scatter = VectorRand() * scatter_amount * distance_factor * transfer_factor
+                    shard_velocity = shard_velocity + scatter
+                    
+                    -- Ensure upward component for dramatic effect (scaled by transfer factor)
+                    local min_upward = 50 * transfer_factor
+                    local max_upward = 150 * transfer_factor
+                    if shard_velocity.z < min_upward then
+                        shard_velocity.z = shard_velocity.z + math.random(min_upward, max_upward)
+                    end
+                end
+                
+                phys:SetVelocity(shard_velocity)
             end
             
             -- prop protection support
@@ -293,9 +370,12 @@ else
         self:ForcePlayerDrop()
         self.CAN_BREAK = false
         
-        -- Clean up crack state
+        -- Clean up crack state and impact data
         self.showing_cracks = false
         self.crack_lines = nil
+        self.stored_impact_velocity = nil
+        self.stored_impact_force = nil
+        self.stored_scatter = nil
         if self.crack_mesh then
             self.crack_mesh:Destroy()
             self.crack_mesh = nil
@@ -339,9 +419,56 @@ else
         end
         self.last_impact_speed = damage:GetDamage() * 10 -- simulate speed from damage
         
-        self:Split(damagepos, damage:GetDamageType() == DMG_BLAST)
-        if !show_cracks:GetBool() then
-            self.CAN_BREAK = false
+        -- Rigidity system: fast impacts break immediately, slow impacts accumulate
+        local damage_amount = damage:GetDamage()
+        local damage_type = damage:GetDamageType()
+        local rigidity_threshold = glass_rigidity:GetFloat()
+        local should_break = false
+        
+        -- Fast impacts that should break immediately regardless of rigidity
+        local is_fast_impact = (
+            damage_type == DMG_BULLET or           -- bullets
+            damage_type == DMG_BUCKSHOT or        -- shotgun pellets  
+            damage_type == DMG_SNIPER or          -- sniper rifles
+            damage_type == DMG_BLAST or           -- explosions
+            damage_amount < 15                     -- small precise damage (like bullets)
+        )
+        
+        if is_fast_impact or rigidity_threshold <= 0 then
+            -- Break immediately for fast impacts or when rigidity disabled
+            should_break = true
+        else
+            -- Accumulate damage for slow impacts
+            self.accumulated_damage = (self.accumulated_damage or 0) + damage_amount
+            
+            if self.accumulated_damage >= rigidity_threshold then
+                should_break = true
+            else
+                -- Show minor crack effect without breaking
+                if show_cracks:GetBool() and math.random() < 0.3 then -- 30% chance for minor cracks
+                    self:ShowCracks(damagepos, self.last_impact_normal)
+                end
+                
+                -- Play glass stress sound
+                self:EmitSound("physics/glass/glass_strain" .. math.random(1, 4) .. ".wav", 40, math.random(120, 150))
+                
+                -- Visual feedback for damage accumulation
+                if attacker and attacker:IsPlayer() then
+                    attacker:ChatPrint("Glass damage: " .. math.Round(self.accumulated_damage) .. "/" .. math.Round(rigidity_threshold))
+                end
+                
+                return -- Don't break yet
+            end
+        end
+        
+        if should_break then
+            -- Reset damage counter when breaking
+            self.accumulated_damage = 0
+            
+            self:Split(damagepos, damage:GetDamageType() == DMG_BLAST)
+            if !show_cracks:GetBool() then
+                self.CAN_BREAK = false
+            end
         end
     end
 
@@ -367,15 +494,164 @@ else
             self.last_impact_normal = data.HitNormal
             self.last_impact_speed = data.Speed
             
-            timer.Simple(0, function() -- NEVER change collision rules in physics feedback
-                if !self or !self:IsValid() then return end
-                self:Split(self:WorldToLocal(pos))
-                if !show_cracks:GetBool() then
-                    self.CAN_BREAK = false
+            -- Enhanced rigidity system considering mass and velocity
+            local impact_speed = data.Speed
+            local impact_mass = 1 -- Default mass if we can't get it
+            
+            -- Try to get the mass of the impacting object
+            if ho and ho:IsValid() and ho.GetPhysicsObject and ho:GetPhysicsObject():IsValid() then
+                impact_mass = ho:GetPhysicsObject():GetMass()
+            end
+            
+            -- Apply mass factor scaling
+            local adjusted_mass = impact_mass * mass_factor:GetFloat()
+            
+            -- Calculate impact force using momentum (mass * velocity)
+            -- Add some kinetic energy consideration (0.5 * mass * velocity^2)
+            local momentum = adjusted_mass * impact_speed
+            local kinetic_energy = 0.5 * adjusted_mass * (impact_speed * impact_speed) / 1000 -- Scale down for reasonable numbers
+            local impact_force = momentum + (kinetic_energy * 0.1) -- Combine momentum and kinetic energy
+            
+            -- Convert impact force to damage equivalent 
+            local collision_damage = impact_force / 15 -- Adjust this divisor to balance
+            
+            local rigidity_threshold = glass_rigidity:GetFloat()
+            local should_break = false
+            
+            -- Very high impact forces should break immediately (like bullets)
+            -- Dense objects or very fast impacts bypass rigidity
+            local is_devastating_impact = (
+                impact_force > 8000 or           -- Very high momentum/energy
+                impact_speed > 800 or            -- Extremely fast
+                (adjusted_mass > 50 and impact_speed > 400) -- Heavy and fast (using adjusted mass)
+            )
+            
+            if is_devastating_impact or rigidity_threshold <= 0 then
+                -- Break immediately for devastating impacts
+                should_break = true
+            else
+                -- Accumulate damage for lesser impacts
+                self.accumulated_damage = (self.accumulated_damage or 0) + collision_damage
+                
+                if self.accumulated_damage >= rigidity_threshold then
+                    should_break = true
+                else
+                    -- Show minor crack effect without breaking
+                    if show_cracks:GetBool() and math.random() < math.min(0.5, collision_damage / 30) then 
+                        -- Higher chance of cracks for stronger impacts
+                        local local_pos = self:WorldToLocal(pos)
+                        self:ShowCracks(local_pos, self.last_impact_normal)
+                    end
+                    
+                    -- Play glass stress sound (pitch varies with impact force)
+                    local pitch = math.Clamp(120 + (impact_force / 100), 90, 180)
+                    self:EmitSound("physics/glass/glass_strain" .. math.random(1, 4) .. ".wav", 30, pitch)
+                    
+                    return -- Don't break yet
                 end
-            end)
+            end
+            
+            if should_break then
+                -- Reset damage counter when breaking
+                self.accumulated_damage = 0
+                
+                timer.Simple(0, function() -- NEVER change collision rules in physics feedback
+                    if !self or !self:IsValid() then return end
+                    self:Split(self:WorldToLocal(pos))
+                    if !show_cracks:GetBool() then
+                        self.CAN_BREAK = false
+                    end
+                end)
+            end
     	end
 	end	
+
+    function ENT:Touch(entity)
+        if !self.CAN_BREAK or self.showing_cracks then return end
+        if !entity:IsPlayer() then return end
+        
+        -- Prevent spam by adding a small cooldown per player
+        local current_time = CurTime()
+        local player_id = entity:SteamID()
+        self.player_touch_cooldowns = self.player_touch_cooldowns or {}
+        
+        if self.player_touch_cooldowns[player_id] and (current_time - self.player_touch_cooldowns[player_id]) < 0.5 then
+            return -- Still in cooldown
+        end
+        
+        -- Get player movement data
+        local player_velocity = entity:GetVelocity()
+        local player_speed = player_velocity:Length()
+        
+        -- Minimum speed threshold for glass breaking (walking speed ~100, running speed ~200+)
+        local min_break_speed = player_break_speed:GetInt() -- Players need to be moving at least this fast
+        if player_speed < min_break_speed then return end
+        
+        -- Set cooldown for this player (they're moving fast enough to potentially break glass)
+        self.player_touch_cooldowns[player_id] = current_time
+        
+        -- Estimate player mass (average adult ~70kg, can be adjusted)
+        local player_mass_kg = player_mass:GetInt()
+        
+        -- Calculate player impact force using the same system as physics objects
+        local adjusted_mass = player_mass_kg * mass_factor:GetFloat()
+        local momentum = adjusted_mass * player_speed
+        local kinetic_energy = 0.5 * adjusted_mass * (player_speed * player_speed) / 1000
+        local impact_force = momentum + (kinetic_energy * 0.1)
+        local collision_damage = impact_force / 15
+        
+        local rigidity_threshold = glass_rigidity:GetFloat()
+        local should_break = false
+        
+        -- Fast running players should break glass immediately
+        local is_fast_player = player_speed > 250 -- Sprinting speed
+        
+        if is_fast_player or rigidity_threshold <= 0 then
+            should_break = true
+        else
+            -- Accumulate damage for slower movement
+            self.accumulated_damage = (self.accumulated_damage or 0) + collision_damage
+            
+            if self.accumulated_damage >= rigidity_threshold then
+                should_break = true
+            else
+                -- Show minor crack effect without breaking
+                if show_cracks:GetBool() and math.random() < math.min(0.4, collision_damage / 25) then
+                    local contact_pos = entity:GetPos() - self:GetPos()
+                    local local_pos = self:WorldToLocal(entity:GetPos())
+                    self:ShowCracks(local_pos, player_velocity:GetNormalized())
+                end
+                
+                -- Play glass stress sound
+                local pitch = math.Clamp(100 + (player_speed / 5), 80, 160)
+                self:EmitSound("physics/glass/glass_strain" .. math.random(1, 4) .. ".wav", 40, pitch)
+                
+                return -- Don't break yet
+            end
+        end
+        
+        if should_break then
+            -- Store player impact data for realistic shard physics
+            self.last_impact_normal = player_velocity:GetNormalized()
+            self.last_impact_speed = player_speed
+            self.accumulated_damage = 0
+            
+            -- Calculate impact position (where player touches glass)
+            local contact_pos = entity:GetPos() - self:GetPos()
+            local local_impact_pos = self:WorldToLocal(entity:GetPos())
+            
+            -- Break the glass with player impact data
+            self:Split(local_impact_pos, false) -- Not an explosion
+            if !show_cracks:GetBool() then
+                self.CAN_BREAK = false
+            end
+            
+            -- Optional: Provide feedback to player
+            if math.random() < 0.3 then -- 30% chance for flavor text
+                entity:ChatPrint("You crashed through the glass!")
+            end
+        end
+    end
 
     function ENT:OnRemove()
         local orig_shard = self:GetOriginalShard()
@@ -410,6 +686,7 @@ function ENT:Initialize(first)
 
     if SERVER then 
         self.CAN_BREAK = false
+        self.accumulated_damage = 0 -- Track damage for rigidity system
         -- if valid to completely remove
         local orig_shard = self:GetOriginalShard()
         if orig_shard and orig_shard:IsValid() then
@@ -519,6 +796,11 @@ if SERVER then
         ply:ChatPrint("glass_show_cracks: " .. (show_cracks:GetBool() and "ON" or "OFF"))
         ply:ChatPrint("glass_crack_delay: " .. crack_delay:GetFloat() .. " seconds")
         ply:ChatPrint("glass_shard_count: " .. shard_count:GetInt() .. " (1=few, 7=many)")
+        ply:ChatPrint("glass_rigidity: " .. glass_rigidity:GetFloat() .. " (0=fragile, 200=very strong)")
+        ply:ChatPrint("glass_mass_factor: " .. mass_factor:GetFloat() .. " (0.5=less mass effect, 2.0=more)")
+        ply:ChatPrint("glass_velocity_transfer: " .. velocity_transfer:GetFloat() .. " (0.5=less dramatic, 2.0=more)")
+        ply:ChatPrint("glass_player_mass: " .. player_mass:GetInt() .. " kg")
+        ply:ChatPrint("glass_player_break_speed: " .. player_break_speed:GetInt() .. " (100=walking, 250=sprinting)")
         ply:ChatPrint("glass_lagfriendly: " .. (use_expensive:GetBool() and "ON" or "OFF"))
     end, nil, "Show current glass addon settings")
     
@@ -541,6 +823,126 @@ if SERVER then
             ply:ChatPrint("Look at a glass shard to test breaking")
         end
     end, nil, "Immediately break looked-at glass to test shard count (Admin only)")
+    
+    concommand.Add("glass_reset_damage", function(ply, cmd, args)
+        if !ply:IsSuperAdmin() then return end
+        
+        local tr = ply:GetEyeTrace()
+        if tr.Entity and tr.Entity:GetClass() == "procedural_shard" then
+            local shard = tr.Entity
+            local old_damage = shard.accumulated_damage or 0
+            shard.accumulated_damage = 0
+            ply:ChatPrint("Reset glass damage from " .. math.Round(old_damage) .. " to 0")
+        else
+            ply:ChatPrint("Look at a glass shard to reset its damage")
+        end
+    end, nil, "Reset accumulated damage on looked-at glass (Admin only)")
+    
+    concommand.Add("glass_check_damage", function(ply, cmd, args)
+        local tr = ply:GetEyeTrace()
+        if tr.Entity and tr.Entity:GetClass() == "procedural_shard" then
+            local shard = tr.Entity
+            local current_damage = shard.accumulated_damage or 0
+            local threshold = glass_rigidity:GetFloat()
+            ply:ChatPrint("Glass damage: " .. math.Round(current_damage) .. "/" .. math.Round(threshold) .. " (" .. math.Round((current_damage/threshold)*100) .. "%)")
+        else
+            ply:ChatPrint("Look at a glass shard to check its damage")
+        end
+    end, nil, "Check accumulated damage on looked-at glass")
+    
+    concommand.Add("glass_impact_debug", function(ply, cmd, args)
+        if !ply:IsSuperAdmin() then return end
+        
+        local tr = ply:GetEyeTrace()
+        if tr.Entity and tr.Entity.GetPhysicsObject then
+            local ent = tr.Entity
+            local phys = ent:GetPhysicsObject()
+            
+            if !phys or !phys:IsValid() then
+                ply:ChatPrint("Object has no valid physics object")
+                return
+            end
+            
+            local mass = phys:GetMass()
+            local velocity = phys:GetVelocity():Length()
+            
+            -- Calculate the same impact force as the collision system
+            local adjusted_mass = mass * mass_factor:GetFloat()
+            local momentum = adjusted_mass * velocity
+            local kinetic_energy = 0.5 * adjusted_mass * (velocity * velocity) / 1000
+            local impact_force = momentum + (kinetic_energy * 0.1)
+            local collision_damage = impact_force / 15
+            
+            ply:ChatPrint("=== Impact Analysis ===")
+            ply:ChatPrint("Original Mass: " .. math.Round(mass, 1) .. " kg")
+            ply:ChatPrint("Adjusted Mass: " .. math.Round(adjusted_mass, 1) .. " kg (factor: " .. mass_factor:GetFloat() .. ")")
+            ply:ChatPrint("Velocity: " .. math.Round(velocity, 1) .. " units/s")
+            ply:ChatPrint("Momentum: " .. math.Round(momentum, 1))
+            ply:ChatPrint("Kinetic Energy: " .. math.Round(kinetic_energy, 1))
+            ply:ChatPrint("Impact Force: " .. math.Round(impact_force, 1))
+            ply:ChatPrint("Glass Damage: " .. math.Round(collision_damage, 1))
+            
+            -- Predict if this would break glass
+            local threshold = glass_rigidity:GetFloat()
+            local would_devastate = (impact_force > 8000 or velocity > 800 or (adjusted_mass > 50 and velocity > 400))
+            
+            if would_devastate then
+                ply:ChatPrint("Result: INSTANT BREAK (devastating impact)")
+            elseif collision_damage >= threshold then
+                ply:ChatPrint("Result: WOULD BREAK (exceeds rigidity)")
+            else
+                ply:ChatPrint("Result: Would accumulate " .. math.Round(collision_damage, 1) .. "/" .. threshold .. " damage")
+            end
+        else
+            ply:ChatPrint("Look at an object with physics to analyze its impact potential")
+        end
+    end, nil, "Analyze the impact force of looked-at object (Admin only)")
+    
+    concommand.Add("glass_player_debug", function(ply, cmd, args)
+        local player_velocity = ply:GetVelocity()
+        local player_speed = player_velocity:Length()
+        local player_mass_kg = player_mass:GetInt()
+        local min_break_speed = player_break_speed:GetInt()
+        
+        -- Calculate the same impact force as the touch system
+        local adjusted_mass = player_mass_kg * mass_factor:GetFloat()
+        local momentum = adjusted_mass * player_speed
+        local kinetic_energy = 0.5 * adjusted_mass * (player_speed * player_speed) / 1000
+        local impact_force = momentum + (kinetic_energy * 0.1)
+        local collision_damage = impact_force / 15
+        
+        ply:ChatPrint("=== Player Impact Analysis ===")
+        ply:ChatPrint("Current Speed: " .. math.Round(player_speed, 1) .. " units/s")
+        ply:ChatPrint("Required Speed: " .. min_break_speed .. " units/s")
+        ply:ChatPrint("Player Mass: " .. player_mass_kg .. " kg")
+        ply:ChatPrint("Adjusted Mass: " .. math.Round(adjusted_mass, 1) .. " kg (factor: " .. mass_factor:GetFloat() .. ")")
+        ply:ChatPrint("Momentum: " .. math.Round(momentum, 1))
+        ply:ChatPrint("Kinetic Energy: " .. math.Round(kinetic_energy, 1))
+        ply:ChatPrint("Impact Force: " .. math.Round(impact_force, 1))
+        ply:ChatPrint("Glass Damage: " .. math.Round(collision_damage, 1))
+        
+        -- Predict if this would break glass
+        local threshold = glass_rigidity:GetFloat()
+        local is_fast_enough = player_speed >= min_break_speed
+        local is_sprinting = player_speed > 250
+        
+        if !is_fast_enough then
+            ply:ChatPrint("Result: TOO SLOW (need " .. (min_break_speed - player_speed) .. " more speed)")
+        elseif is_sprinting or threshold <= 0 then
+            ply:ChatPrint("Result: INSTANT BREAK (sprinting speed)")
+        elseif collision_damage >= threshold then
+            ply:ChatPrint("Result: WOULD BREAK (exceeds rigidity)")
+        else
+            ply:ChatPrint("Result: Would accumulate " .. math.Round(collision_damage, 1) .. "/" .. threshold .. " damage")
+        end
+        
+        -- Movement tips
+        if player_speed < 50 then
+            ply:ChatPrint("Tip: Start moving to see impact analysis")
+        elseif player_speed < min_break_speed then
+            ply:ChatPrint("Tip: Run faster to break glass (hold SHIFT to sprint)")
+        end
+    end, nil, "Analyze your current glass-breaking potential")
 end
 
 -- Crack visualization system
