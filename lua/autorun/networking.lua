@@ -5,6 +5,7 @@ local generateUV, generateNormals, simplify_vertices, split_convex, split_entity
 // networking
 if SERVER then
     util.AddNetworkString("SHARD_NETWORK")
+    util.AddNetworkString("GLASS_SHOW_CRACKS")
 
     // must be from client requesting data, send back shard data
     net.Receive("SHARD_NETWORK", function(len, ply)
@@ -136,6 +137,27 @@ else
             end
 
             timer.Remove("try_shard" .. shard)
+        end)
+    end)
+    
+    // Receive crack visualization data
+    net.Receive("GLASS_SHOW_CRACKS", function(len)
+        local shard_entity = net.ReadEntity()
+        local impact_pos = net.ReadVector()
+        local impact_normal = net.ReadVector()
+        local explode = net.ReadBool()
+        
+        if !shard_entity or !shard_entity:IsValid() then return end
+        
+        // Convert to local coordinates
+        local local_pos = shard_entity:WorldToLocal(shard_entity:GetPos() + impact_pos)
+        local local_normal = shard_entity:WorldToLocalAngles(impact_normal:Angle()):Forward()
+        
+        // Show cracks on client
+        timer.Simple(0, function() // slight delay to ensure entity is ready
+            if shard_entity and shard_entity:IsValid() and shard_entity.ShowCracks then
+                shard_entity:ShowCracks(local_pos, local_normal)
+            end
         end)
     end)
 end	
