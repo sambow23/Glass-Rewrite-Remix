@@ -1,6 +1,6 @@
 AddCSLuaFile()
 
-local generateUV, generateNormals, simplify_vertices, split_convex, split_entity = include("world_functions.lua")
+local generateUV, generateNormals, simplify_vertices, split_convex = include("world_functions.lua")
 
 // networking
 if SERVER then
@@ -27,76 +27,121 @@ if SERVER then
         end
     end)
 
-    // must be from client requesting data, send back shard data
+    -- Handles requests for shard data from clients
     net.Receive("SHARD_NETWORK", function(len, ply)
-        local shard = net.ReadEntity()
-        if not shard:IsValid() or not shard.TRIANGLES then return end
-        
-        local triangles = shard.TRIANGLES
-        if not triangles or #triangles == 0 then return end
-        
-        net.Start("SHARD_NETWORK")
-        net.WriteUInt(shard:EntIndex(), 16)
-        
-        // Write vertex count
-        net.WriteUInt(#triangles, 16)
-        
-        // Write each vertex's position
-        for _, tri in ipairs(triangles) do
-            local pos = tri.pos
-            net.WriteFloat(pos.x)
-            net.WriteFloat(pos.y)
-            net.WriteFloat(pos.z)
+        -- If len > 0, client is requesting a single shard (post-break)
+        if len > 0 then
+            local shard = net.ReadEntity()
+            if not shard:IsValid() or not shard.TRIANGLES then return end
+            
+            local triangles = shard.TRIANGLES
+            if not triangles or #triangles == 0 then return end
+            
+            net.Start("SHARD_NETWORK")
+            net.WriteBool(false) -- Indicate this is NOT a full update
+            net.WriteUInt(shard:EntIndex(), 16)
+            net.WriteUInt(#triangles, 16)
+            
+            for _, tri in ipairs(triangles) do
+                local pos = tri.pos
+                net.WriteFloat(pos.x)
+                net.WriteFloat(pos.y)
+                net.WriteFloat(pos.z)
+            end
+            net.Send(ply)
+        else 
+            -- If len == 0, client is joining and needs all existing shards
+            net.Start("SHARD_NETWORK")
+            net.WriteBool(true) -- Indicate this IS a full update
+
+            local all_shards = ents.FindByClass("procedural_shard")
+            net.WriteUInt(#all_shards, 16) -- How many shards we are sending
+
+            for _, shard in ipairs(all_shards) do
+                if shard:IsValid() and shard.TRIANGLES and #shard.TRIANGLES > 0 then
+                    net.WriteUInt(shard:EntIndex(), 16)
+                    net.WriteUInt(#shard.TRIANGLES, 16)
+                    for _, tri in ipairs(shard.TRIANGLES) do
+                        local pos = tri.pos
+                        net.WriteFloat(pos.x)
+                        net.WriteFloat(pos.y)
+                        net.WriteFloat(pos.z)
+                    end
+                else
+                    -- Send a placeholder for invalid shards
+                    net.WriteUInt(0, 16)
+                    net.WriteUInt(0, 16)
+                end
+            end
+            net.Send(ply)
         end
-        net.Send(ply)
     end)
 else
-    // NEW: Receive finalized vertex data and build the visual mesh
+    -- NEW: Receive finalized vertex data and build the visual mesh
     net.Receive("SHARD_NETWORK", function(len)
-        local shard_index = net.ReadUInt(16)
-        local vertex_count = net.ReadUInt(16)
-        
-        if vertex_count == 0 then return end
+        local is_full_update = net.ReadBool()
 
+        if is_full_update then
+            -- This is a full update for a joining player
+            local total_shards = net.ReadUInt(16)
+            for i = 1, total_shards do
+                local shard_index = net.ReadUInt(16)
+                local vertex_count = net.ReadUInt(16)
+                if shard_index > 0 and vertex_count > 0 then
+                    ProcessShardData(shard_index, vertex_count)
+                end
+            end
+        else
+            -- This is an update for a single, newly-created shard
+            local shard_index = net.ReadUInt(16)
+            local vertex_count = net.ReadUInt(16)
+            if shard_index > 0 and vertex_count > 0 then
+                ProcessShardData(shard_index, vertex_count)
+            end
+        end
+    end)
+
+    -- Helper function to process received shard data and build the mesh
+    function ProcessShardData(shard_index, vertex_count)
         local model_triangles = {}
         for i = 1, vertex_count do
             local pos_x = net.ReadFloat()
             local pos_y = net.ReadFloat()
             local pos_z = net.ReadFloat()
             
-            // Reconstruct the vertex table structure
+            -- Reconstruct the vertex table structure
             model_triangles[i] = { pos = Vector(pos_x, pos_y, pos_z) }
         end
 
-        // Try and find shard on client within 10 seconds
+        -- Try and find shard on client within 10 seconds
         timer.Create("try_shard" .. shard_index, 0.1, 100, function()
             local shard_entity = Entity(shard_index)
             if not shard_entity:IsValid() then return end
             
-            // We have the exact triangles, no need to do any splitting
+            -- We have the exact triangles, no need to do any splitting
             shard_entity.TRIANGLES = model_triangles
 
-            // generate missing normals and uvs
+            -- generate missing normals and uvs
             generateUV(shard_entity.TRIANGLES, -1/50)
             generateNormals(shard_entity.TRIANGLES)
 
-            // Build the visual mesh
+            -- Build the visual mesh
             if shard_entity.RENDER_MESH and shard_entity.RENDER_MESH.Mesh:IsValid() then
                 shard_entity.RENDER_MESH.Mesh:Destroy()
             end
             shard_entity.RENDER_MESH.Mesh = Mesh()
             shard_entity.RENDER_MESH.Mesh:BuildFromTriangles(shard_entity.TRIANGLES)
 
-            // Hide the original reference shard if it exists
+            -- Hide the original reference shard if it exists
             local reference_shard = shard_entity:GetReferenceShard()
             if reference_shard:IsValid() then
                 reference_shard:SetNoDraw(true)
             end
 
-            // Stop this timer
+            -- Stop this timer
             timer.Remove("try_shard" .. shard_index)
         end)
-    end)
+    end
     
     // Receive crack visualization data
     net.Receive("GLASS_SHOW_CRACKS", function(len)

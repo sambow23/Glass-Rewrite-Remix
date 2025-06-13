@@ -267,27 +267,6 @@ else
              table.insert(convexes, {shard.verts})
         end
         
-        if SERVER then
-            print("[Glass Validation] Shard generation report:")
-            print("  - Initial planes generated: " .. #planes)
-            print("  - Final potential shards: " .. #convexes)
-            
-            local valid_shards = 0
-            for i, conv in ipairs(convexes) do
-                local verts = conv[1]
-                if verts and #verts >= 4 then
-                    valid_shards = valid_shards + 1
-                end
-            end
-            print("  - Usable shards (>=4 vertices): " .. valid_shards .. "/" .. #convexes)
-            
-            if valid_shards == 0 and #convexes > 0 then
-                print("  - [CRITICAL] No valid shards were generated. This likely means the split_convex function is failing to produce usable meshes.")
-            elseif valid_shards < 2 and #planes > 0 then
-                 print("  - [WARNING] Very few shards were generated. The glass may appear to only crack or disappear. Check plane generation and splitting logic.")
-            end
-        end
-
         local pos = self:GetPos()
         local ang = self:GetAngles()
         local model = self:GetPhysModel()
@@ -325,42 +304,39 @@ else
             if phys:IsValid() then
                 -- Calculate realistic shard velocity based on impact
                 local shard_velocity = Vector(vel.x, vel.y, vel.z) -- Start with original glass velocity
-                
+                local transfer_factor = velocity_transfer:GetFloat()
+
                 if impact_velocity:Length() > 0 then
                     -- Get the center of this shard relative to impact point
-                    local shard_center = block:GetPos()
-                    local impact_world_pos = self:LocalToWorld(pos)
-                    local impact_to_shard = (shard_center - impact_world_pos):GetNormalized()
+                    local shard_center = block:LocalToWorld(block:OBBCenter())
+                    local impact_world_pos = self:LocalToWorld(impact_pos)
+                    local impact_to_shard = (shard_center - impact_world_pos)
                     
                     -- Calculate distance factor (closer shards get more velocity)
-                    local distance = impact_world_pos:Distance(shard_center)
-                    local distance_factor = math.Clamp(1 - (distance / self:BoundingRadius()), 0.2, 1)
+                    local distance = impact_to_shard:Length()
+                    if distance < 1 then distance = 1 end -- Prevent division by zero
+                    local distance_factor = math.Clamp(1 - (distance / self:BoundingRadius()), 0.1, 1)
+
+                    -- NEW Velocity Model:
+                    -- 1. Base force pushing directly away from the impact point.
+                    local radial_force = impact_to_shard:GetNormalized() * (impact_force_magnitude * 0.3 * distance_factor * transfer_factor)
+
+                    -- 2. Inherit some of the original impact's direction and force.
+                    local inherited_force = impact_velocity * (0.8 * distance_factor * transfer_factor)
                     
-                    -- Apply velocity transfer scaling
-                    local transfer_factor = velocity_transfer:GetFloat()
-                    
-                    -- Base impact velocity in the direction from impact to shard
-                    local directional_velocity = impact_to_shard * (impact_force_magnitude * 0.2 * distance_factor * transfer_factor)
-                    
-                    -- Add the original impact direction with some force
-                    local impact_contribution = impact_velocity * distance_factor * transfer_factor
-                    
-                    -- Combine directional and impact velocities
-                    shard_velocity = shard_velocity + directional_velocity + impact_contribution
-                    
-                    -- Add some random scatter for realistic breaking
-                    local scatter = VectorRand() * scatter_amount * distance_factor * transfer_factor
-                    shard_velocity = shard_velocity + scatter
-                    
-                    -- Ensure upward component for dramatic effect (scaled by transfer factor)
-                    local min_upward = 50 * transfer_factor
-                    local max_upward = 150 * transfer_factor
-                    if shard_velocity.z < min_upward then
-                        shard_velocity.z = shard_velocity.z + math.random(min_upward, max_upward)
-                    end
+                    -- 3. Add a small amount of chaotic scatter.
+                    local scatter = VectorRand() * (scatter_amount * 0.5 * distance_factor * transfer_factor)
+
+                    shard_velocity = shard_velocity + radial_force + inherited_force + scatter
                 end
                 
                 phys:SetVelocity(shard_velocity)
+
+                -- NEW: Add realistic angular velocity (spin/torque)
+                -- The amount of spin is based on the impact force and shard's distance from the impact.
+                local rotational_force = math.min(impact_force_magnitude * 1.5, 1200) * transfer_factor
+                local random_spin = VectorRand() * rotational_force
+                phys:AddAngleVelocity(random_spin)
             end
             
             -- prop protection support
