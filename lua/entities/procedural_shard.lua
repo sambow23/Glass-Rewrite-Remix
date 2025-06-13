@@ -174,6 +174,11 @@ else
         local convexes = {}
         local split_depth = shard_count:GetInt() -- Use console variable as base
         
+        -- If this is the first break of an original piece of glass, create more shards.
+        if not self:GetReferenceShard():IsValid() then
+            split_depth = split_depth + math.random(2, 4) -- Add 2 to 4 extra "levels" of cracks.
+        end
+
         local function calculate_mesh_center(verts)
             if not verts or #verts == 0 then return Vector(0, 0, 0) end
             local total = Vector(0, 0, 0)

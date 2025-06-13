@@ -77,6 +77,7 @@ if SERVER then
         end
     end)
 else
+    local default_mat = Material("models/props_combine/health_charger_glass")
     -- NEW: Receive finalized vertex data and build the visual mesh
     net.Receive("SHARD_NETWORK", function(len)
         local is_full_update = net.ReadBool()
@@ -113,8 +114,10 @@ else
             model_triangles[i] = { pos = Vector(pos_x, pos_y, pos_z) }
         end
 
-        -- Try and find shard on client within 10 seconds
-        timer.Create("try_shard" .. shard_index, 0.1, 100, function()
+        -- Try and find shard on client.
+        -- Using timer.Simple(0,...) schedules this for the next frame,
+        -- which is much faster than the old timer.Create and removes the artificial delay.
+        timer.Simple(0, function()
             local shard_entity = Entity(shard_index)
             if not shard_entity:IsValid() then return end
             
@@ -125,10 +128,16 @@ else
             generateUV(shard_entity.TRIANGLES, -1/50)
             generateNormals(shard_entity.TRIANGLES)
 
-            -- Build the visual mesh
-            if shard_entity.RENDER_MESH and shard_entity.RENDER_MESH.Mesh:IsValid() then
+            -- Build the visual mesh, guarding against race conditions where the entity
+            -- exists but has not been fully initialized on the client yet.
+            if not shard_entity.RENDER_MESH then
+                shard_entity.RENDER_MESH = { Material = default_mat }
+            end
+
+            if shard_entity.RENDER_MESH.Mesh and shard_entity.RENDER_MESH.Mesh:IsValid() then
                 shard_entity.RENDER_MESH.Mesh:Destroy()
             end
+            
             shard_entity.RENDER_MESH.Mesh = Mesh()
             shard_entity.RENDER_MESH.Mesh:BuildFromTriangles(shard_entity.TRIANGLES)
 
@@ -137,9 +146,6 @@ else
             if reference_shard:IsValid() then
                 reference_shard:SetNoDraw(true)
             end
-
-            -- Stop this timer
-            timer.Remove("try_shard" .. shard_index)
         end)
     end
     

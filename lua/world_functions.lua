@@ -63,21 +63,27 @@ local function simplify_vertices(verts, scale)
     local verts2 = {}
     local n = 0
     local average = Vector()
+    
+    -- New O(n) implementation using a hash set to track seen vertices.
+    local seen_verts = {}
+    
     for i = 1, #verts do
-        local stop
-        for x = 1, #verts2 do
-            if (verts[i].pos or verts[i]):DistToSqr(verts2[x]) < 0.1 then 
-                stop = true
-                break
-            end
-        end
+        local vert_pos = verts[i].pos or verts[i]
         
-        if !stop then
+        -- Create a unique key for the vertex position by rounding it.
+        -- This groups vertices that are very close together, achieving the same
+        -- goal as the old distance check, but much more efficiently.
+        local key = (math.floor(vert_pos.x * 10) .. "," .. math.floor(vert_pos.y * 10) .. "," .. math.floor(vert_pos.z * 10))
+
+        if not seen_verts[key] then
+            seen_verts[key] = true
             n = n + 1
-            verts2[n] = (verts[i].pos or verts[i])
-            average = average + verts2[n]// * scale
+            verts2[n] = vert_pos
+            average = average + vert_pos
         end
     end
+
+    if n == 0 then return {}, Vector() end
 
     average = average / n
 
