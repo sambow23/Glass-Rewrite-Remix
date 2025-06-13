@@ -275,4 +275,73 @@ local function split_convex(tris, plane_pos, plane_dir)
     return split_tris
 end
 
-return generateUV, generateNormals, simplify_vertices, split_convex
+-- Checks if a set of vertices can form a valid 3D physics object.
+-- If the shape is degenerate (e.g., flat), it returns a minimal, valid
+-- tetrahedron centered on the original shape's average position.
+-- This prevents the "CreateConvexObjectFromTableOfVerts: Invalid vertices" engine error.
+local function are_verts_valid_for_phys(verts)
+    -- A physics object needs at least 4 vertices to define a volume.
+    if #verts < 4 then 
+        local center = Vector(0,0,0)
+        if #verts > 0 then
+            for i=1, #verts do center = center + verts[i] end
+            center = center / #verts
+        end
+        return {
+            center + Vector(1, -1, -1),
+            center + Vector(-1, -1, -1),
+            center + Vector(0, 1, -1),
+            center + Vector(0, 0, 1),
+        }
+    end
+
+    -- To have a volume, the vertices can't all lie on the same plane.
+    -- We check this by trying to find 4 non-coplanar points.
+    local p1 = verts[1]
+    local p2, p3
+
+    -- Find the second point, must be distinct from the first.
+    for i = 2, #verts do
+        if (verts[i] - p1):LengthSqr() > 0.1 then
+            p2 = verts[i]
+            break
+        end
+    end
+    if not p2 then return false end -- All points are in the same spot.
+
+    -- Find the third point, must not be on the line between p1 and p2.
+    local line_dir = (p2 - p1):GetNormalized()
+    for i = 3, #verts do
+        if not verts[i] or not verts[i].Dot then continue end -- Safety check for valid vectors
+        if math.abs(line_dir:Dot((verts[i] - p1):GetNormalized())) < 0.999 then
+            p3 = verts[i]
+            break
+        end
+    end
+    if not p3 then return false end -- All points are on the same line.
+
+    -- Find the fourth point, must not be on the plane defined by p1, p2, p3.
+    local plane_normal = (p2 - p1):Cross(p3 - p1):GetNormalized()
+    for i = 4, #verts do
+        if not verts[i] or not verts[i].Dot then continue end -- Safety check for valid vectors
+        -- The distance from a point to a plane is the dot product of the vector
+        -- from a point on the plane to the point, and the plane's normal vector.
+        local dist_from_plane = math.abs((verts[i] - p1):Dot(plane_normal))
+        if dist_from_plane > 0.1 then
+            -- This point is not on the plane, so we have a volume.
+            return verts -- The original vertices are valid.
+        end
+    end
+
+    -- If we get here, all points were on the same plane.
+    -- Create a minimal tetrahedron centered at the average position of the flat shard.
+    local center = (p1 + p2 + p3) / 3
+    return {
+        center + Vector(1, -1, -1),
+        center + Vector(-1, -1, -1),
+        center + Vector(0, 1, -1),
+        center + Vector(0, 0, 1),
+    }
+end
+
+return generateUV, generateNormals, simplify_vertices, split_convex, are_verts_valid_for_phys

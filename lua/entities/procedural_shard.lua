@@ -9,7 +9,7 @@ ENT.Purpose			= "Destructable Fun"
 ENT.Instructions	= "Spawn and damage it"
 ENT.Spawnable		= false
 
-local generateUV, generateNormals, simplify_vertices, split_convex = include("world_functions.lua")
+local generateUV, generateNormals, simplify_vertices, split_convex, are_verts_valid_for_phys = include("world_functions.lua")
 
 function ENT:SetupDataTables()
 	self:NetworkVar("String", 0, "PhysModel")
@@ -30,6 +30,11 @@ local player_break_speed = CreateConVar("glass_player_break_speed", 150, {FCVAR_
 
 function ENT:BuildCollision(verts, pointer)
     local new_verts, offset = simplify_vertices(verts, self:GetPhysScale())
+    
+    -- The are_verts_valid_for_phys function now guarantees a valid set of verts,
+    -- either the original ones or a new minimal tetrahedron.
+    new_verts = are_verts_valid_for_phys(new_verts)
+
     self:EnableCustomCollisions()
 	self:PhysicsInitConvex(new_verts)
 
