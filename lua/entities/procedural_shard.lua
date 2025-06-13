@@ -9,7 +9,7 @@ ENT.Purpose			= "Destructable Fun"
 ENT.Instructions	= "Spawn and damage it"
 ENT.Spawnable		= false
 
-local generateUV, generateNormals, simplify_vertices, split_convex, split_entity = include("world_functions.lua")
+local generateUV, generateNormals, simplify_vertices, split_convex = include("world_functions.lua")
 
 function ENT:SetupDataTables()
 	self:NetworkVar("String", 0, "PhysModel")
@@ -19,7 +19,6 @@ function ENT:SetupDataTables()
 end
 
 local use_expensive = CreateConVar("glass_lagfriendly", 0, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "", 0, 1)
-local realistic_breaking = CreateConVar("glass_realistic_breaking", 1, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Use realistic radial glass breaking patterns (1) or old random breaking (0)", 0, 1)
 local show_cracks = CreateConVar("glass_show_cracks", 1, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Show visual cracks before glass breaks (1) or break immediately (0)", 0, 1)
 local crack_delay = CreateConVar("glass_crack_delay", 0.15, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Delay in seconds between showing cracks and breaking", 0.05, 1.0)
 local shard_count = CreateConVar("glass_shard_count", 4, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Controls number of glass shards (1=few, 7=many)", 1, 7)
@@ -175,93 +174,120 @@ else
         local convexes = {}
         local split_depth = shard_count:GetInt() -- Use console variable as base
         
-        -- Choose breaking pattern based on console variable
-        if realistic_breaking:GetBool() then
-            -- Create realistic glass fracture patterns
-            local impact_pos = pos
-            local shard_center = Vector(0, 0, 0) -- local center of the shard
-            local impact_distance = impact_pos:Distance(shard_center)
-            local shard_size = self:BoundingRadius()
+        local function calculate_mesh_center(verts)
+            if not verts or #verts == 0 then return Vector(0, 0, 0) end
+            local total = Vector(0, 0, 0)
+            local count = 0
+            -- The vertex list can be tables with .pos (initial mesh) or just vectors (split results)
+            for _, v_data in ipairs(verts) do
+                local vert_pos = v_data.pos or v_data
+                total = total + vert_pos
+                count = count + 1
+            end
+            if count == 0 then return Vector(0,0,0) end
+            return total / count
+        end
+
+        -- Create realistic glass fracture patterns
+        local impact_pos = pos
+        local impact_normal = self.last_impact_normal or (self:GetPos() - self:LocalToWorld(pos)):GetNormalized()
+        local shard_size = self:BoundingRadius()
+
+        --[[
+            New Breaking Algorithm:
+            1. Generate a primary set of radial cracks emanating from the impact point.
+            2. Generate a secondary set of concentric cracks that form rings around the impact.
+            3. Create a list of all cutting planes from these cracks.
+            4. Recursively split the mesh using these planes, with a probability of stopping at each level
+               to create a better distribution of shard sizes.
+        ]]
+
+        local planes = {}
+        local num_radial_cracks = math.random(math.max(2, split_depth - 1), split_depth + 2)
+        local num_concentric_cracks = math.random(split_depth - 2, split_depth)
+
+        -- 1. Generate Radial Cracks
+        local primary_radial_dir = impact_normal:Cross(VectorRand()):GetNormalized()
+        for i = 1, num_radial_cracks do
+            local angle = Angle(0, (360 / num_radial_cracks) * i + math.Rand(-10, 10), 0)
+            local radial_dir = primary_radial_dir
+            radial_dir:Rotate(angle)
             
-            -- Create radial crack directions from impact point
-            local crack_count = 0
-            local function realisticVec() 
-                crack_count = crack_count + 1
+            -- Add a bit of vertical randomness
+            radial_dir.z = radial_dir.z + math.Rand(-0.3, 0.3)
+            
+            table.insert(planes, {pos = impact_pos, dir = radial_dir:GetNormalized()})
+        end
+
+        -- 2. Generate Concentric Cracks
+        if num_concentric_cracks > 0 then
+            local max_dist = shard_size * math.Rand(0.7, 1.0)
+            for i = 1, num_concentric_cracks do
+                local dist_from_center = (max_dist / num_concentric_cracks) * i
+                local crack_pos = impact_pos + impact_normal * dist_from_center * math.Rand(0.8, 1.2)
                 
-                -- Create radial cracks emanating from impact point
-                if crack_count <= 3 then
-                    -- Primary radial cracks - emanate directly from impact
-                    local radial_dir = (VectorRand() * Vector(1, 1, 0.3)):GetNormalized()
-                    
-                    -- Bias toward perpendicular to impact if we have velocity data
-                    if self.last_impact_normal then
-                        local perpendicular = self.last_impact_normal:Cross(VectorRand()):GetNormalized()
-                        radial_dir = (radial_dir + perpendicular * 0.7):GetNormalized()
-                    end
-                    
-                    return radial_dir
-                elseif crack_count <= 5 then
-                    -- Secondary cracks - somewhat random but biased away from impact
-                    local away_from_impact = (shard_center - impact_pos):GetNormalized()
-                    local random_bias = VectorRand() * 0.4
-                    return (away_from_impact + random_bias):GetNormalized()
-                else
-                    -- Tertiary cracks - more random for natural variation
-                    local random_dir = VectorRand():GetNormalized()
-                    
-                    -- Slight bias toward horizontal/vertical for more realistic patterns
-                    random_dir.x = random_dir.x * (math.random(0.6, 1.4))
-                    random_dir.y = random_dir.y * (math.random(0.6, 1.4))
-                    random_dir.z = random_dir.z * (math.random(0.3, 0.8))
-                    
-                    return random_dir:GetNormalized()
+                -- The plane normal for a concentric crack is the impact normal
+                table.insert(planes, {pos = crack_pos, dir = impact_normal})
+            end
+        end
+
+        -- New iterative splitting logic
+        local shards_to_process = {{verts = self.TRIANGLES}}
+        
+        -- Process planes one by one, splitting the largest available shard each time
+        for i = 1, #planes do
+            if #shards_to_process == 0 then break end
+
+            -- Find the largest shard to split next
+            local largest_shard_index = -1
+            local max_verts = -1
+            for j, shard in ipairs(shards_to_process) do
+                if #shard.verts > max_verts then
+                    max_verts = #shard.verts
+                    largest_shard_index = j
                 end
             end
             
-            -- Vary crack positions based on stress distribution
-            local function realisticPos() 
-                -- Cracks closer to impact should be more frequent
-                local stress_factor = math.max(0.1, 1 - (impact_distance / shard_size))
-                
-                -- Create some cracks at the impact point
-                if crack_count <= 2 then
-                    return impact_pos + VectorRand() * (shard_size * 0.1)
-                else
-                    -- Other cracks distributed with stress bias
-                    local random_offset = VectorRand() * shard_size * (0.3 + stress_factor * 0.4)
-                    return impact_pos + random_offset
-                end
-            end
+            if largest_shard_index == -1 then break end
             
-            -- Apply modifiers to the base shard count
-            if explode then
-                split_depth = split_depth + 2 -- explosions create more fragments
-            elseif shard_size < 50 then
-                split_depth = math.max(1, split_depth - 1) -- smaller pieces split less
-            elseif impact_distance < shard_size * 0.3 then
-                split_depth = split_depth + 1 -- direct hits create more fragments
-            end
+            -- Remove the largest shard from the list to be replaced by its children
+            local shard_to_split = table.remove(shards_to_process, largest_shard_index)
+            local plane = planes[i]
             
-            -- Clamp to reasonable bounds for performance
-            split_depth = math.Clamp(split_depth, 1, 7)
+            local split_1 = split_convex(shard_to_split.verts, plane.pos, plane.dir)
+            local split_2 = split_convex(shard_to_split.verts, plane.pos, -plane.dir)
             
-            split_entity({realisticVec, realisticPos}, self.TRIANGLES, convexes, split_depth)
-        else
-            -- Original random breaking pattern for backward compatibility
-            -- Apply same modifiers for consistency
-            if explode then
-                split_depth = split_depth + 2
-            elseif self:BoundingRadius() < 50 then
-                split_depth = math.max(1, split_depth - 1)
-            end
-            
-            split_depth = math.Clamp(split_depth, 1, 7)
-            
-            local function randVec() return VectorRand():GetNormalized() end
-            local function randPos() return pos end
-            split_entity({randVec, randPos}, self.TRIANGLES, convexes, split_depth)
+            -- If a split results in a valid shard, add it back to the list
+            if #split_1 > 3 then table.insert(shards_to_process, {verts = split_1}) end
+            if #split_2 > 3 then table.insert(shards_to_process, {verts = split_2}) end
+        end
+
+        -- All remaining shards in shards_to_process are our final convexes
+        for _, shard in ipairs(shards_to_process) do
+             table.insert(convexes, {shard.verts})
         end
         
+        if SERVER then
+            print("[Glass Validation] Shard generation report:")
+            print("  - Initial planes generated: " .. #planes)
+            print("  - Final potential shards: " .. #convexes)
+            
+            local valid_shards = 0
+            for i, conv in ipairs(convexes) do
+                local verts = conv[1]
+                if verts and #verts >= 4 then
+                    valid_shards = valid_shards + 1
+                end
+            end
+            print("  - Usable shards (>=4 vertices): " .. valid_shards .. "/" .. #convexes)
+            
+            if valid_shards == 0 and #convexes > 0 then
+                print("  - [CRITICAL] No valid shards were generated. This likely means the split_convex function is failing to produce usable meshes.")
+            elseif valid_shards < 2 and #planes > 0 then
+                 print("  - [WARNING] Very few shards were generated. The glass may appear to only crack or disappear. Check plane generation and splitting logic.")
+            end
+        end
+
         local pos = self:GetPos()
         local ang = self:GetAngles()
         local model = self:GetPhysModel()
@@ -346,13 +372,6 @@ else
             end
 
             if k == 1 then block:EmitSound("Glass.Break") end
-
-            block.PLANES = physmesh[2]         -- second thing in table is the planes, in format local_pos, normal, local_pos, normal, etc
-            if block.COMBINED_PLANES then
-                table.Add(block.COMBINED_PLANES, physmesh[2])
-            else
-                block.COMBINED_PLANES = physmesh[2]
-            end
 
             -- weld it to other shards
             if lastblock then
@@ -787,7 +806,6 @@ if SERVER then
     
     concommand.Add("glass_settings", function(ply, cmd, args)
         ply:ChatPrint("=== Glass Addon Settings ===")
-        ply:ChatPrint("glass_realistic_breaking: " .. (realistic_breaking:GetBool() and "ON" or "OFF"))
         ply:ChatPrint("glass_show_cracks: " .. (show_cracks:GetBool() and "ON" or "OFF"))
         ply:ChatPrint("glass_crack_delay: " .. crack_delay:GetFloat() .. " seconds")
         ply:ChatPrint("glass_shard_count: " .. shard_count:GetInt() .. " (1=few, 7=many)")
