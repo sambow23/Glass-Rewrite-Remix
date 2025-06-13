@@ -18,7 +18,7 @@ function ENT:SetupDataTables()
     self:NetworkVar("Entity", 1, "OriginalShard")
 end
 
-local use_expensive = CreateConVar("glass_lagfriendly", 0, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "", 0, 1)
+local glass_expensive_shards = CreateConVar("glass_expensive_shards", 0, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Makes small glass shards collide with everything, which is more resource intensive.", 0, 1)
 local show_cracks = CreateConVar("glass_show_cracks", 1, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Show visual cracks before glass breaks (1) or break immediately (0)", 0, 1)
 local crack_delay = CreateConVar("glass_crack_delay", 0.15, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Delay in seconds between showing cracks and breaking", 0.05, 1.0)
 local shard_count = CreateConVar("glass_shard_count", 4, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Controls number of glass shards (1=few, 7=many)", 1, 7)
@@ -42,7 +42,7 @@ function ENT:BuildCollision(verts, pointer)
             local bounding = self:BoundingRadius()
             if bounding < 40 and self:GetOriginalShard():IsValid() then
                 self:SetCollisionGroup(COLLISION_GROUP_DEBRIS)
-                if use_expensive then self:SetCollisionGroup(COLLISION_GROUP_WORLD) end
+                if glass_expensive_shards:GetBool() then self:SetCollisionGroup(COLLISION_GROUP_WORLD) end
                 if bounding < 20 then 
                     -- glass effect
                     local data = EffectData() data:SetOrigin(self:GetPos())
@@ -427,11 +427,7 @@ else
         
         -- Fast impacts that should break immediately regardless of rigidity
         local is_fast_impact = (
-            damage_type == DMG_BULLET or           -- bullets
-            damage_type == DMG_BUCKSHOT or        -- shotgun pellets  
-            damage_type == DMG_SNIPER or          -- sniper rifles
-            damage_type == DMG_BLAST or           -- explosions
-            damage_amount < 15                     -- small precise damage (like bullets)
+            damage_type == DMG_BLAST           -- explosions
         )
         
         if is_fast_impact or rigidity_threshold <= 0 then
@@ -518,16 +514,13 @@ else
             local rigidity_threshold = glass_rigidity:GetFloat()
             local should_break = false
             
-            -- Very high impact forces should break immediately (like bullets)
-            -- Dense objects or very fast impacts bypass rigidity
-            local is_devastating_impact = (
-                impact_force > 8000 or           -- Very high momentum/energy
-                impact_speed > 800 or            -- Extremely fast
-                (adjusted_mass > 50 and impact_speed > 400) -- Heavy and fast (using adjusted mass)
+            -- Fast impacts that should break immediately regardless of rigidity
+            local is_fast_impact = (
+                damage_type == DMG_BLAST           -- explosions
             )
             
-            if is_devastating_impact or rigidity_threshold <= 0 then
-                -- Break immediately for devastating impacts
+            if is_fast_impact or rigidity_threshold <= 0 then
+                -- Break immediately for fast impacts or when rigidity disabled
                 should_break = true
             else
                 -- Accumulate damage for lesser impacts
@@ -795,7 +788,7 @@ if SERVER then
         ply:ChatPrint("glass_velocity_transfer: " .. velocity_transfer:GetFloat() .. " (0.5=less dramatic, 2.0=more)")
         ply:ChatPrint("glass_player_mass: " .. player_mass:GetInt() .. " kg")
         ply:ChatPrint("glass_player_break_speed: " .. player_break_speed:GetInt() .. " (100=walking, 250=sprinting)")
-        ply:ChatPrint("glass_lagfriendly: " .. (use_expensive:GetBool() and "ON" or "OFF"))
+        ply:ChatPrint("glass_expensive_shards: " .. (glass_expensive_shards:GetBool() and "ON" or "OFF"))
     end, nil, "Show current glass addon settings")
     
     concommand.Add("glass_break_test", function(ply, cmd, args)

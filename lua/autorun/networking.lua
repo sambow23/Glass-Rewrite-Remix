@@ -8,24 +8,17 @@ if SERVER then
     util.AddNetworkString("GLASS_SHOW_CRACKS")
     util.AddNetworkString("GLASS_NO_COLLIDE")
 
-    // Track player interactions with physics objects for better collision detection
-    hook.Add("PlayerUse", "glass_track_player_use", function(ply, ent)
+    -- Track player interactions with physics objects for better collision detection
+    local function TrackPlayerInteraction(ply, ent)
         if ent and ent:IsValid() and ent:GetPhysicsObject():IsValid() then
             ent.last_player_touch = {
                 player = ply,
                 time = CurTime()
             }
         end
-    end)
-    
-    hook.Add("PhysgunPickup", "glass_track_physgun", function(ply, ent)
-        if ent and ent:IsValid() and ent:GetPhysicsObject():IsValid() then
-            ent.last_player_touch = {
-                player = ply,
-                time = CurTime()
-            }
-        end
-    end)
+    end
+    hook.Add("PlayerUse", "glass_track_player_use", TrackPlayerInteraction)
+    hook.Add("PhysgunPickup", "glass_track_physgun", TrackPlayerInteraction)
 
     -- Handles requests for shard data from clients
     net.Receive("SHARD_NETWORK", function(len, ply)
