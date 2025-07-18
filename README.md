@@ -1,3 +1,8 @@
+# Remix Stuff
+- More shards
+- Better impact physics
+- Shatter effects
+
 # Glass-Rewrite
 A Rewrite of a Garrys Mod Addon created a year ago
 
