@@ -3,8 +3,8 @@ AddCSLuaFile()
 ENT.Type = "anim"
 ENT.Base = "base_gmodentity"
 
-ENT.Category		= "Glass: Rewrite"
-ENT.Author			= "Mee"
+ENT.Category		= "Glass: Rewrite Remixed"
+ENT.Author			= "CR (original by Mee)"
 ENT.Purpose			= "Destructable Fun"
 ENT.Instructions	= "Spawn and damage it"
 ENT.Spawnable		= false
@@ -18,15 +18,15 @@ function ENT:SetupDataTables()
     self:NetworkVar("Entity", 1, "OriginalShard")
 end
 
-local glass_expensive_shards = CreateConVar("rtx_glass_expensive_shards", 0, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Makes small glass shards collide with everything, which is more resource intensive.", 0, 1)
+local glass_expensive_shards = CreateConVar("rtx_glass_expensive_shards", 1, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Makes small glass shards collide with everything, which is more resource intensive.", 0, 1)
 local show_cracks = CreateConVar("rtx_glass_show_cracks", 1, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Show visual cracks before glass breaks (1) or break immediately (0)", 0, 1)
-local crack_delay = CreateConVar("rtx_glass_crack_delay", 0.15, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Delay in seconds between showing cracks and breaking", 0.05, 1.0)
-local shard_count = CreateConVar("rtx_glass_shard_count", 4, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Controls number of glass shards (1=few, 7=many)", 1, 7)
-local glass_rigidity = CreateConVar("rtx_glass_rigidity", 50, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Glass damage threshold before breaking (0=fragile, 200=very strong)", 0, 200)
-local mass_factor = CreateConVar("rtx_glass_mass_factor", 1.0, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "How much object mass affects impact force (0.5=less, 2.0=more)", 0.1, 3.0)
-local velocity_transfer = CreateConVar("rtx_glass_velocity_transfer", 1.0, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "How much impact velocity transfers to shards (0.5=less dramatic, 2.0=more)", 0.1, 3.0)
-local player_mass = CreateConVar("rtx_glass_player_mass", 70, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Player mass in kg for glass breaking calculations (50=light, 100=heavy)", 30, 150)
-local player_break_speed = CreateConVar("rtx_glass_player_break_speed", 150, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Minimum player speed to break glass (100=walking, 250=sprinting)", 50, 400)
+local crack_delay = CreateConVar("rtx_glass_crack_delay", 0.05, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Delay in seconds between showing cracks and breaking", 0.05, 1.0)
+local shard_count = CreateConVar("rtx_glass_shard_count", 12, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Controls number of glass shards (1=few, 7=many)", 1, 7)
+local glass_rigidity = CreateConVar("rtx_glass_rigidity", 0, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Glass damage threshold before breaking (0=fragile, 200=very strong)", 0, 200)
+local mass_factor = CreateConVar("rtx_glass_mass_factor", 0.8, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "How much object mass affects impact force (0.5=less, 2.0=more)", 0.1, 3.0)
+local velocity_transfer = CreateConVar("rtx_glass_velocity_transfer", 2.0, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "How much impact velocity transfers to shards (0.5=less dramatic, 2.0=more)", 0.1, 3.0)
+local player_mass = CreateConVar("rtx_glass_player_mass", 80, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Player mass in kg for glass breaking calculations (50=light, 100=heavy)", 30, 150)
+local player_break_speed = CreateConVar("rtx_glass_player_break_speed", 80, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Minimum player speed to break glass (100=walking, 250=sprinting)", 50, 400)
 
 function ENT:BuildCollision(verts, pointer)
     local new_verts, offset = simplify_vertices(verts, self:GetPhysScale())
@@ -152,7 +152,7 @@ else
             
             -- Send crack data to clients
             if SERVER then
-                net.Start("rtx_glass_SHOW_CRACKS")
+                net.Start("GLASS_SHOW_CRACKS")
                 net.WriteEntity(self)
                 net.WriteVector(pos)
                 net.WriteVector(self.last_impact_normal or Vector(0, 0, 1))
@@ -184,34 +184,10 @@ else
             split_depth = split_depth + math.random(2, 4) -- Add 2 to 4 extra "levels" of cracks.
         end
 
-        local function calculate_mesh_center(verts)
-            if not verts or #verts == 0 then return Vector(0, 0, 0) end
-            local total = Vector(0, 0, 0)
-            local count = 0
-            -- The vertex list can be tables with .pos (initial mesh) or just vectors (split results)
-            for _, v_data in ipairs(verts) do
-                local vert_pos = v_data.pos or v_data
-                total = total + vert_pos
-                count = count + 1
-            end
-            if count == 0 then return Vector(0,0,0) end
-            return total / count
-        end
-
         -- Create realistic glass fracture patterns
         local impact_pos = pos
         local impact_normal = self.last_impact_normal or (self:GetPos() - self:LocalToWorld(pos)):GetNormalized()
         local shard_size = self:BoundingRadius()
-
-        --[[
-            New Breaking Algorithm:
-            1. Generate a primary set of radial cracks emanating from the impact point.
-            2. Generate a secondary set of concentric cracks that form rings around the impact.
-            3. Create a list of all cutting planes from these cracks.
-            4. Recursively split the mesh using these planes, with a probability of stopping at each level
-               to create a better distribution of shard sizes.
-        ]]
-
         local planes = {}
         local num_radial_cracks = math.random(math.max(2, split_depth - 1), split_depth + 2)
         local num_concentric_cracks = math.random(split_depth - 2, split_depth)
@@ -766,56 +742,7 @@ hook.Add("InitPostEntity", "glass_init", replaceGlass)
 hook.Add("PostCleanupMap", "glass_init", replaceGlass)
 
 -- Console commands for crack system
-if SERVER then
-    concommand.Add("rtx_glass_test_cracks", function(ply, cmd, args)
-        if !ply:IsSuperAdmin() then return end
-        
-        local tr = ply:GetEyeTrace()
-        if tr.Entity and tr.Entity:GetClass() == "procedural_shard" then
-            local shard = tr.Entity
-            local impact_pos = shard:WorldToLocal(tr.HitPos)
-            shard.last_impact_normal = tr.HitNormal
-            shard.last_impact_speed = 500
-            shard:ShowCracks(impact_pos, tr.HitNormal)
-            ply:ChatPrint("Showing test cracks on glass shard")
-        else
-            ply:ChatPrint("Look at a glass shard to test cracks")
-        end
-    end, nil, "Test crack visualization on looked-at glass shard (Admin only)")
-    
-    concommand.Add("rtx_glass_settings", function(ply, cmd, args)
-        ply:ChatPrint("=== Glass Addon Settings ===")
-        ply:ChatPrint("rtx_glass_show_cracks: " .. (show_cracks:GetBool() and "ON" or "OFF"))
-        ply:ChatPrint("rtx_glass_crack_delay: " .. crack_delay:GetFloat() .. " seconds")
-        ply:ChatPrint("rtx_glass_shard_count: " .. shard_count:GetInt() .. " (1=few, 7=many)")
-        ply:ChatPrint("rtx_glass_rigidity: " .. glass_rigidity:GetFloat() .. " (0=fragile, 200=very strong)")
-        ply:ChatPrint("rtx_glass_mass_factor: " .. mass_factor:GetFloat() .. " (0.5=less mass effect, 2.0=more)")
-        ply:ChatPrint("rtx_glass_velocity_transfer: " .. velocity_transfer:GetFloat() .. " (0.5=less dramatic, 2.0=more)")
-        ply:ChatPrint("rtx_glass_player_mass: " .. player_mass:GetInt() .. " kg")
-        ply:ChatPrint("rtx_glass_player_break_speed: " .. player_break_speed:GetInt() .. " (100=walking, 250=sprinting)")
-        ply:ChatPrint("rtx_glass_expensive_shards: " .. (glass_expensive_shards:GetBool() and "ON" or "OFF"))
-    end, nil, "Show current glass addon settings")
-    
-    concommand.Add("rtx_glass_break_test", function(ply, cmd, args)
-        if !ply:IsSuperAdmin() then return end
-        
-        local tr = ply:GetEyeTrace()
-        if tr.Entity and tr.Entity:GetClass() == "procedural_shard" then
-            local shard = tr.Entity
-            if shard.CAN_BREAK then
-                local impact_pos = shard:WorldToLocal(tr.HitPos)
-                shard.last_impact_normal = tr.HitNormal
-                shard.last_impact_speed = 500
-                shard:Split(impact_pos, false, true) -- skip cracks for immediate break
-                ply:ChatPrint("Breaking glass with " .. shard_count:GetInt() .. " shard count")
-            else
-                ply:ChatPrint("Glass is not breakable right now")
-            end
-        else
-            ply:ChatPrint("Look at a glass shard to test breaking")
-        end
-    end, nil, "Immediately break looked-at glass to test shard count (Admin only)")
-    
+if SERVER then    
     concommand.Add("rtx_glass_reset_damage", function(ply, cmd, args)
         if !ply:IsSuperAdmin() then return end
         
@@ -829,112 +756,6 @@ if SERVER then
             ply:ChatPrint("Look at a glass shard to reset its damage")
         end
     end, nil, "Reset accumulated damage on looked-at glass (Admin only)")
-    
-    concommand.Add("rtx_glass_check_damage", function(ply, cmd, args)
-        local tr = ply:GetEyeTrace()
-        if tr.Entity and tr.Entity:GetClass() == "procedural_shard" then
-            local shard = tr.Entity
-            local current_damage = shard.accumulated_damage or 0
-            local threshold = glass_rigidity:GetFloat()
-            ply:ChatPrint("Glass damage: " .. math.Round(current_damage) .. "/" .. math.Round(threshold) .. " (" .. math.Round((current_damage/threshold)*100) .. "%)")
-        else
-            ply:ChatPrint("Look at a glass shard to check its damage")
-        end
-    end, nil, "Check accumulated damage on looked-at glass")
-    
-    concommand.Add("rtx_glass_impact_debug", function(ply, cmd, args)
-        if !ply:IsSuperAdmin() then return end
-        
-        local tr = ply:GetEyeTrace()
-        if tr.Entity and tr.Entity.GetPhysicsObject then
-            local ent = tr.Entity
-            local phys = ent:GetPhysicsObject()
-            
-            if !phys or !phys:IsValid() then
-                ply:ChatPrint("Object has no valid physics object")
-                return
-            end
-            
-            local mass = phys:GetMass()
-            local velocity = phys:GetVelocity():Length()
-            
-            -- Calculate the same impact force as the collision system
-            local adjusted_mass = mass * mass_factor:GetFloat()
-            local momentum = adjusted_mass * velocity
-            local kinetic_energy = 0.5 * adjusted_mass * (velocity * velocity) / 1000
-            local impact_force = momentum + (kinetic_energy * 0.1)
-            local collision_damage = impact_force / 15
-            
-            ply:ChatPrint("=== Impact Analysis ===")
-            ply:ChatPrint("Original Mass: " .. math.Round(mass, 1) .. " kg")
-            ply:ChatPrint("Adjusted Mass: " .. math.Round(adjusted_mass, 1) .. " kg (factor: " .. mass_factor:GetFloat() .. ")")
-            ply:ChatPrint("Velocity: " .. math.Round(velocity, 1) .. " units/s")
-            ply:ChatPrint("Momentum: " .. math.Round(momentum, 1))
-            ply:ChatPrint("Kinetic Energy: " .. math.Round(kinetic_energy, 1))
-            ply:ChatPrint("Impact Force: " .. math.Round(impact_force, 1))
-            ply:ChatPrint("Glass Damage: " .. math.Round(collision_damage, 1))
-            
-            -- Predict if this would break glass
-            local threshold = glass_rigidity:GetFloat()
-            local would_devastate = (impact_force > 8000 or velocity > 800 or (adjusted_mass > 50 and velocity > 400))
-            
-            if would_devastate then
-                ply:ChatPrint("Result: INSTANT BREAK (devastating impact)")
-            elseif collision_damage >= threshold then
-                ply:ChatPrint("Result: WOULD BREAK (exceeds rigidity)")
-            else
-                ply:ChatPrint("Result: Would accumulate " .. math.Round(collision_damage, 1) .. "/" .. threshold .. " damage")
-            end
-        else
-            ply:ChatPrint("Look at an object with physics to analyze its impact potential")
-        end
-    end, nil, "Analyze the impact force of looked-at object (Admin only)")
-    
-    concommand.Add("rtx_glass_player_debug", function(ply, cmd, args)
-        local player_velocity = ply:GetVelocity()
-        local player_speed = player_velocity:Length()
-        local player_mass_kg = player_mass:GetInt()
-        local min_break_speed = player_break_speed:GetInt()
-        
-        -- Calculate the same impact force as the touch system
-        local adjusted_mass = player_mass_kg * mass_factor:GetFloat()
-        local momentum = adjusted_mass * player_speed
-        local kinetic_energy = 0.5 * adjusted_mass * (player_speed * player_speed) / 1000
-        local impact_force = momentum + (kinetic_energy * 0.1)
-        local collision_damage = impact_force / 15
-        
-        ply:ChatPrint("=== Player Impact Analysis ===")
-        ply:ChatPrint("Current Speed: " .. math.Round(player_speed, 1) .. " units/s")
-        ply:ChatPrint("Required Speed: " .. min_break_speed .. " units/s")
-        ply:ChatPrint("Player Mass: " .. player_mass_kg .. " kg")
-        ply:ChatPrint("Adjusted Mass: " .. math.Round(adjusted_mass, 1) .. " kg (factor: " .. mass_factor:GetFloat() .. ")")
-        ply:ChatPrint("Momentum: " .. math.Round(momentum, 1))
-        ply:ChatPrint("Kinetic Energy: " .. math.Round(kinetic_energy, 1))
-        ply:ChatPrint("Impact Force: " .. math.Round(impact_force, 1))
-        ply:ChatPrint("Glass Damage: " .. math.Round(collision_damage, 1))
-        
-        -- Predict if this would break glass
-        local threshold = glass_rigidity:GetFloat()
-        local is_fast_enough = player_speed >= min_break_speed
-        local is_sprinting = player_speed > 250
-        
-        if !is_fast_enough then
-            ply:ChatPrint("Result: TOO SLOW (need " .. (min_break_speed - player_speed) .. " more speed)")
-        elseif is_sprinting or threshold <= 0 then
-            ply:ChatPrint("Result: INSTANT BREAK (sprinting speed)")
-        elseif collision_damage >= threshold then
-            ply:ChatPrint("Result: WOULD BREAK (exceeds rigidity)")
-        else
-            ply:ChatPrint("Result: Would accumulate " .. math.Round(collision_damage, 1) .. "/" .. threshold .. " damage")
-        end
-        
-        -- Movement tips
-        if player_speed < 50 then
-            ply:ChatPrint("Tip: Start moving to see impact analysis")
-        elseif player_speed < min_break_speed then
-            ply:ChatPrint("Tip: Run faster to break glass (hold SHIFT to sprint)")
-        end
-    end, nil, "Analyze your current glass-breaking potential")
     
     concommand.Add("rtx_glass_panel", function(ply, cmd, args)
         ply:ChatPrint("Opening Glass Settings Panel...")
