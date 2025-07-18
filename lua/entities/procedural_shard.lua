@@ -21,7 +21,7 @@ end
 local glass_expensive_shards = CreateConVar("rtx_glass_expensive_shards", 1, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Makes small glass shards collide with everything, which is more resource intensive.", 0, 1)
 local show_cracks = CreateConVar("rtx_glass_show_cracks", 1, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Show visual cracks before glass breaks (1) or break immediately (0)", 0, 1)
 local crack_delay = CreateConVar("rtx_glass_crack_delay", 0.05, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Delay in seconds between showing cracks and breaking", 0.05, 1.0)
-local shard_count = CreateConVar("rtx_glass_shard_count", 12, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Controls number of glass shards (1=few, 7=many)", 1, 7)
+local shard_count = CreateConVar("rtx_glass_shard_count", 12, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Controls number of glass shards (1=few, 7=many)", 1, 12)
 local glass_rigidity = CreateConVar("rtx_glass_rigidity", 0, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Glass damage threshold before breaking (0=fragile, 200=very strong)", 0, 200)
 local mass_factor = CreateConVar("rtx_glass_mass_factor", 0.8, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "How much object mass affects impact force (0.5=less, 2.0=more)", 0.1, 3.0)
 local velocity_transfer = CreateConVar("rtx_glass_velocity_transfer", 2.0, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "How much impact velocity transfers to shards (0.5=less dramatic, 2.0=more)", 0.1, 3.0)

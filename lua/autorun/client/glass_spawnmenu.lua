@@ -5,7 +5,7 @@ local PANEL = {}
 
 function PANEL:Init()
     self:SetSize(400, 600)
-    self:SetTitle("Glass Rewrite Settings")
+    self:SetTitle("Glass Rewrite Remixed Settings")
     self:SetDeleteOnClose(false)
     self:SetDraggable(true)
     self:ShowCloseButton(true)
@@ -18,7 +18,7 @@ function PANEL:Init()
     
     -- Title
     local title = vgui.Create("DLabel", scroll)
-    title:SetText("Glass Rewrite - Remix Settings")
+    title:SetText("Glass Rewrite Remixed Settings")
     title:SetFont("DermaDefaultBold")
     title:SetTextColor(Color(255, 255, 255))
     title:SizeToContents()
@@ -63,7 +63,7 @@ function PANEL:CreateVisualSection(parent)
     self:CreateSlider(visual_panel, "Shard Count", "rtx_glass_shard_count", 1, 12, 0, "Number of pieces glass breaks into")
     
     -- Velocity Transfer
-    self:CreateSlider(visual_panel, "Velocity Transfer", "rtx_glass_velocity_transfer", 0.1, 3.0, 1, "How dramatic the glass explosion is")
+    self:CreateSlider(visual_panel, "Velocity Transfer", "rtx_glass_velocity_transfer", 0.1, 3.0, 2, "How dramatic the glass explosion is")
 end
 
 function PANEL:CreatePhysicsSection(parent)
@@ -194,10 +194,10 @@ vgui.Register("GlassSettingsPanel", PANEL, "DFrame")
 
 -- Add to spawnmenu
 hook.Add("PopulateToolMenu", "GlassRewriteSettings", function()
-    spawnmenu.AddToolMenuOption("Utilities", "Glass Rewrite", "GlassSettings", "Settings", "", "", function(panel)
+    spawnmenu.AddToolMenuOption("Utilities", "Glass Rewrite Remixed", "GlassSettings", "Settings", "", "", function(panel)
         panel:ClearControls()
         
-        panel:AddControl("Header", {Description = "Glass Rewrite - Remix\nRealistic glass destruction system"})
+        panel:AddControl("Header", {Description = "Glass Rewrite Remixed\nRealistic glass destruction system"})
         
         -- Quick Settings Button
         panel:AddControl("Button", {
@@ -239,7 +239,7 @@ hook.Add("PopulateToolMenu", "GlassRewriteSettings", function()
             Command = "rtx_glass_shard_count",
             Type = "Integer", 
             Min = "1",
-            Max = "7"
+            Max = "12"
         })
         
         panel:AddControl("Slider", {
