@@ -18,15 +18,15 @@ function ENT:SetupDataTables()
     self:NetworkVar("Entity", 1, "OriginalShard")
 end
 
-local glass_expensive_shards = CreateConVar("glass_expensive_shards", 0, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Makes small glass shards collide with everything, which is more resource intensive.", 0, 1)
-local show_cracks = CreateConVar("glass_show_cracks", 1, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Show visual cracks before glass breaks (1) or break immediately (0)", 0, 1)
-local crack_delay = CreateConVar("glass_crack_delay", 0.15, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Delay in seconds between showing cracks and breaking", 0.05, 1.0)
-local shard_count = CreateConVar("glass_shard_count", 4, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Controls number of glass shards (1=few, 7=many)", 1, 7)
-local glass_rigidity = CreateConVar("glass_rigidity", 50, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Glass damage threshold before breaking (0=fragile, 200=very strong)", 0, 200)
-local mass_factor = CreateConVar("glass_mass_factor", 1.0, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "How much object mass affects impact force (0.5=less, 2.0=more)", 0.1, 3.0)
-local velocity_transfer = CreateConVar("glass_velocity_transfer", 1.0, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "How much impact velocity transfers to shards (0.5=less dramatic, 2.0=more)", 0.1, 3.0)
-local player_mass = CreateConVar("glass_player_mass", 70, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Player mass in kg for glass breaking calculations (50=light, 100=heavy)", 30, 150)
-local player_break_speed = CreateConVar("glass_player_break_speed", 150, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Minimum player speed to break glass (100=walking, 250=sprinting)", 50, 400)
+local glass_expensive_shards = CreateConVar("rtx_glass_expensive_shards", 0, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Makes small glass shards collide with everything, which is more resource intensive.", 0, 1)
+local show_cracks = CreateConVar("rtx_glass_show_cracks", 1, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Show visual cracks before glass breaks (1) or break immediately (0)", 0, 1)
+local crack_delay = CreateConVar("rtx_glass_crack_delay", 0.15, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Delay in seconds between showing cracks and breaking", 0.05, 1.0)
+local shard_count = CreateConVar("rtx_glass_shard_count", 4, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Controls number of glass shards (1=few, 7=many)", 1, 7)
+local glass_rigidity = CreateConVar("rtx_glass_rigidity", 50, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Glass damage threshold before breaking (0=fragile, 200=very strong)", 0, 200)
+local mass_factor = CreateConVar("rtx_glass_mass_factor", 1.0, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "How much object mass affects impact force (0.5=less, 2.0=more)", 0.1, 3.0)
+local velocity_transfer = CreateConVar("rtx_glass_velocity_transfer", 1.0, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "How much impact velocity transfers to shards (0.5=less dramatic, 2.0=more)", 0.1, 3.0)
+local player_mass = CreateConVar("rtx_glass_player_mass", 70, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Player mass in kg for glass breaking calculations (50=light, 100=heavy)", 30, 150)
+local player_break_speed = CreateConVar("rtx_glass_player_break_speed", 150, {FCVAR_ARCHIVE, FCVAR_NOTIFY, FCVAR_REPLICATED}, "Minimum player speed to break glass (100=walking, 250=sprinting)", 50, 400)
 
 function ENT:BuildCollision(verts, pointer)
     local new_verts, offset = simplify_vertices(verts, self:GetPhysScale())
@@ -152,7 +152,7 @@ else
             
             -- Send crack data to clients
             if SERVER then
-                net.Start("GLASS_SHOW_CRACKS")
+                net.Start("rtx_glass_SHOW_CRACKS")
                 net.WriteEntity(self)
                 net.WriteVector(pos)
                 net.WriteVector(self.last_impact_normal or Vector(0, 0, 1))
@@ -767,7 +767,7 @@ hook.Add("PostCleanupMap", "glass_init", replaceGlass)
 
 -- Console commands for crack system
 if SERVER then
-    concommand.Add("glass_test_cracks", function(ply, cmd, args)
+    concommand.Add("rtx_glass_test_cracks", function(ply, cmd, args)
         if !ply:IsSuperAdmin() then return end
         
         local tr = ply:GetEyeTrace()
@@ -783,20 +783,20 @@ if SERVER then
         end
     end, nil, "Test crack visualization on looked-at glass shard (Admin only)")
     
-    concommand.Add("glass_settings", function(ply, cmd, args)
+    concommand.Add("rtx_glass_settings", function(ply, cmd, args)
         ply:ChatPrint("=== Glass Addon Settings ===")
-        ply:ChatPrint("glass_show_cracks: " .. (show_cracks:GetBool() and "ON" or "OFF"))
-        ply:ChatPrint("glass_crack_delay: " .. crack_delay:GetFloat() .. " seconds")
-        ply:ChatPrint("glass_shard_count: " .. shard_count:GetInt() .. " (1=few, 7=many)")
-        ply:ChatPrint("glass_rigidity: " .. glass_rigidity:GetFloat() .. " (0=fragile, 200=very strong)")
-        ply:ChatPrint("glass_mass_factor: " .. mass_factor:GetFloat() .. " (0.5=less mass effect, 2.0=more)")
-        ply:ChatPrint("glass_velocity_transfer: " .. velocity_transfer:GetFloat() .. " (0.5=less dramatic, 2.0=more)")
-        ply:ChatPrint("glass_player_mass: " .. player_mass:GetInt() .. " kg")
-        ply:ChatPrint("glass_player_break_speed: " .. player_break_speed:GetInt() .. " (100=walking, 250=sprinting)")
-        ply:ChatPrint("glass_expensive_shards: " .. (glass_expensive_shards:GetBool() and "ON" or "OFF"))
+        ply:ChatPrint("rtx_glass_show_cracks: " .. (show_cracks:GetBool() and "ON" or "OFF"))
+        ply:ChatPrint("rtx_glass_crack_delay: " .. crack_delay:GetFloat() .. " seconds")
+        ply:ChatPrint("rtx_glass_shard_count: " .. shard_count:GetInt() .. " (1=few, 7=many)")
+        ply:ChatPrint("rtx_glass_rigidity: " .. glass_rigidity:GetFloat() .. " (0=fragile, 200=very strong)")
+        ply:ChatPrint("rtx_glass_mass_factor: " .. mass_factor:GetFloat() .. " (0.5=less mass effect, 2.0=more)")
+        ply:ChatPrint("rtx_glass_velocity_transfer: " .. velocity_transfer:GetFloat() .. " (0.5=less dramatic, 2.0=more)")
+        ply:ChatPrint("rtx_glass_player_mass: " .. player_mass:GetInt() .. " kg")
+        ply:ChatPrint("rtx_glass_player_break_speed: " .. player_break_speed:GetInt() .. " (100=walking, 250=sprinting)")
+        ply:ChatPrint("rtx_glass_expensive_shards: " .. (glass_expensive_shards:GetBool() and "ON" or "OFF"))
     end, nil, "Show current glass addon settings")
     
-    concommand.Add("glass_break_test", function(ply, cmd, args)
+    concommand.Add("rtx_glass_break_test", function(ply, cmd, args)
         if !ply:IsSuperAdmin() then return end
         
         local tr = ply:GetEyeTrace()
@@ -816,7 +816,7 @@ if SERVER then
         end
     end, nil, "Immediately break looked-at glass to test shard count (Admin only)")
     
-    concommand.Add("glass_reset_damage", function(ply, cmd, args)
+    concommand.Add("rtx_glass_reset_damage", function(ply, cmd, args)
         if !ply:IsSuperAdmin() then return end
         
         local tr = ply:GetEyeTrace()
@@ -830,7 +830,7 @@ if SERVER then
         end
     end, nil, "Reset accumulated damage on looked-at glass (Admin only)")
     
-    concommand.Add("glass_check_damage", function(ply, cmd, args)
+    concommand.Add("rtx_glass_check_damage", function(ply, cmd, args)
         local tr = ply:GetEyeTrace()
         if tr.Entity and tr.Entity:GetClass() == "procedural_shard" then
             local shard = tr.Entity
@@ -842,7 +842,7 @@ if SERVER then
         end
     end, nil, "Check accumulated damage on looked-at glass")
     
-    concommand.Add("glass_impact_debug", function(ply, cmd, args)
+    concommand.Add("rtx_glass_impact_debug", function(ply, cmd, args)
         if !ply:IsSuperAdmin() then return end
         
         local tr = ply:GetEyeTrace()
@@ -890,7 +890,7 @@ if SERVER then
         end
     end, nil, "Analyze the impact force of looked-at object (Admin only)")
     
-    concommand.Add("glass_player_debug", function(ply, cmd, args)
+    concommand.Add("rtx_glass_player_debug", function(ply, cmd, args)
         local player_velocity = ply:GetVelocity()
         local player_speed = player_velocity:Length()
         local player_mass_kg = player_mass:GetInt()
@@ -936,7 +936,7 @@ if SERVER then
         end
     end, nil, "Analyze your current glass-breaking potential")
     
-    concommand.Add("glass_panel", function(ply, cmd, args)
+    concommand.Add("rtx_glass_panel", function(ply, cmd, args)
         ply:ChatPrint("Opening Glass Settings Panel...")
         ply:ChatPrint("Run 'glass_open_panel' in console or check the Utilities > Glass Rewrite menu in your spawnmenu!")
     end, nil, "Instructions to open the glass settings panel")
